@@ -860,26 +860,163 @@ footer{margin-top:3em;color:var(--muted);font-size:.85rem}
 </main>
 <script>
 (function(){
-  var q=document.getElementById('q'), t=document.getElementById('toggle');
+  var PAGE_KEY = (function() {
+    var path = location.pathname;
+    var file = path.substring(path.lastIndexOf('/') + 1) || 'index';
+    try { file = decodeURIComponent(file); } catch(e) {}
+    if (file === '' || file === 'index' || file === 'index.html' || file.indexOf('FE7_烈火の剣_速查表') >= 0) {
+      return 'fe7_guide';
+    }
+    return 'fe_' + file.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5]/g, '_');
+  })();
+
+  var STORAGE_DETAILS_KEY = PAGE_KEY + '_open_details';
+  var STORAGE_SCROLL_KEY = PAGE_KEY + '_scroll_y';
+
+  var q = document.getElementById('q');
+  var t = document.getElementById('toggle');
+  var detailsList = Array.from(document.querySelectorAll('details'));
+  var isRestoring = true;
+  var isSearching = false;
+  var hasUserInteracted = false;
+  var saveDetailsTimer = null;
+  var saveScrollTimer = null;
+
+  function getDetailKey(d, idx) {
+    return d.id || ('d_' + idx);
+  }
+
+  function updateToggleText() {
+    if (!t) return;
+    var allOpen = detailsList.length > 0 && detailsList.every(function(d){ return d.open; });
+    t.textContent = allOpen ? '全部收合' : '全部展開';
+  }
+
+  function saveDetailsState() {
+    if (isRestoring || isSearching) return;
+    clearTimeout(saveDetailsTimer);
+    saveDetailsTimer = setTimeout(function(){
+      try {
+        var state = {};
+        detailsList.forEach(function(d, idx){
+          state[getDetailKey(d, idx)] = d.open;
+        });
+        localStorage.setItem(STORAGE_DETAILS_KEY, JSON.stringify(state));
+      } catch(e) {}
+    }, 120);
+  }
+
+  function restoreDetailsState() {
+    try {
+      var raw = localStorage.getItem(STORAGE_DETAILS_KEY);
+      if (raw) {
+        var openMap = JSON.parse(raw);
+        if (openMap && typeof openMap === 'object') {
+          detailsList.forEach(function(d, idx){
+            var key = getDetailKey(d, idx);
+            if (Object.prototype.hasOwnProperty.call(openMap, key)) {
+              d.open = !!openMap[key];
+            }
+          });
+        }
+      }
+    } catch(e) {}
+    updateToggleText();
+  }
+
+  function saveScroll() {
+    if (isRestoring) return;
+    try {
+      var y = window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0;
+      localStorage.setItem(STORAGE_SCROLL_KEY, String(Math.round(y)));
+    } catch(e) {}
+  }
+
+  function onScroll() {
+    clearTimeout(saveScrollTimer);
+    saveScrollTimer = setTimeout(saveScroll, 120);
+  }
+
+  function restoreScroll() {
+    if (hasUserInteracted) return;
+    try {
+      var saved = localStorage.getItem(STORAGE_SCROLL_KEY);
+      if (saved !== null) {
+        var y = parseInt(saved, 10);
+        if (!isNaN(y) && y > 0) {
+          window.scrollTo(0, y);
+        }
+      }
+    } catch(e) {}
+  }
+
+  // 1. 禁用瀏覽器預設滾動覆蓋
+  if ('scrollRestoration' in history) {
+    history.scrollRestoration = 'manual';
+  }
+
+  // 2. 恢復先前展開狀態
+  restoreDetailsState();
+  isRestoring = false;
+
+  // 3. 監聽展開/收合事件
+  detailsList.forEach(function(d){
+    d.addEventListener('toggle', function(){
+      saveDetailsState();
+      updateToggleText();
+    });
+  });
+
+  // 4. 滾動保存與恢復
+  function markInteracted() { hasUserInteracted = true; }
+  window.addEventListener('touchstart', markInteracted, { passive: true });
+  window.addEventListener('mousedown', markInteracted, { passive: true });
+  window.addEventListener('wheel', markInteracted, { passive: true });
+
+  window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('pagehide', saveScroll);
+  window.addEventListener('beforeunload', saveScroll);
+  document.addEventListener('visibilitychange', function(){
+    if (document.visibilityState === 'hidden') saveScroll();
+  });
+
+  // 多階段還原滾動位置（確保 layout 計算完成）
+  restoreScroll();
+  setTimeout(restoreScroll, 50);
+  setTimeout(restoreScroll, 200);
+  setTimeout(restoreScroll, 500);
+
+  // 5. 全部展開/全部收合按鈕
   if(t){
     t.classList.remove('hide');
     t.addEventListener('click',function(){
-      var open=t.textContent==='全部展開';
-      document.querySelectorAll('details').forEach(function(d){d.open=open;});
-      t.textContent=open?'全部收合':'全部展開';
+      var open = t.textContent === '全部展開';
+      detailsList.forEach(function(d){ d.open = open; });
+      t.textContent = open ? '全部收合' : '全部展開';
+      saveDetailsState();
     });
   }
+
+  // 6. 搜尋功能
   if(!q) return;
   q.classList.remove('hide');
   q.addEventListener('input',function(){
-    var s=q.value.trim().toLowerCase();
-    document.querySelectorAll('details').forEach(function(d){
-      var hit=!s||d.textContent.toLowerCase().indexOf(s)>=0;
-      d.classList.toggle('hide',!hit); if(s&&hit) d.open=true;
+    var s = q.value.trim().toLowerCase();
+    isSearching = !!s;
+    if (!s) {
+      restoreDetailsState();
+      detailsList.forEach(function(d){ d.classList.remove('hide'); });
+      document.querySelectorAll('tbody tr').forEach(function(tr){ tr.classList.remove('hide'); });
+      return;
+    }
+    detailsList.forEach(function(d){
+      var hit = d.textContent.toLowerCase().indexOf(s) >= 0;
+      d.classList.toggle('hide', !hit);
+      if(hit) d.open = true;
     });
     document.querySelectorAll('tbody tr').forEach(function(tr){
       if(tr.closest('details')) return;
-      tr.classList.toggle('hide',!!s&&tr.textContent.toLowerCase().indexOf(s)<0);
+      tr.classList.toggle('hide', tr.textContent.toLowerCase().indexOf(s) < 0);
     });
   });
 })();
